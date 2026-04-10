@@ -8,12 +8,24 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+import sys
+
 # Base paths
-BASE_DIR = Path(__file__).resolve().parent
+if getattr(sys, 'frozen', False):
+    # If the application is run as a bundle (PyInstaller)
+    # The executable folder where data/images/logs should live
+    BASE_DIR = Path(os.path.dirname(sys.executable))
+    # The temporary folder where the bundled source code is extracted
+    BUNDLE_DIR = Path(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))))
+else:
+    # Standard development environment
+    BASE_DIR = Path(__file__).resolve().parent
+    BUNDLE_DIR = BASE_DIR
+
 DATA_DIR = BASE_DIR / "data"
 IMAGES_DIR = BASE_DIR / "images"
 LOGS_DIR = BASE_DIR / "logs"
-SRC_DIR = BASE_DIR / "src"
+SRC_DIR = BUNDLE_DIR / "src"
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(exist_ok=True)

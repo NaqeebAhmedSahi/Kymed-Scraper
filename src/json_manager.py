@@ -4,7 +4,7 @@ JSON Manager - Handles all JSON file operations for data persistence
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,9 @@ class ProductsManager(JSONManager):
             "id": cat_id,
             "name": cat_name,
             "url": cat_url,
+            "description": "",
+            "image_url": "",
+            "image_local_path": "",
             "subcategories": [],
             "products": []
         }
@@ -136,15 +139,35 @@ class ProductsManager(JSONManager):
         self.save(data)
         logger.info(f"Added category with empty structure: {cat_name}")
     
+    def _find_subcategory_recursive(self, items: List[Dict[str, Any]], subcat_id: str) -> Optional[Dict[str, Any]]:
+        """Find subcategory by ID recursively in any list of subcategories"""
+        for item in items:
+            if item.get("id") == subcat_id:
+                return item
+            
+            # Search in nested subcategories
+            if "subcategories" in item and item["subcategories"]:
+                found = self._find_subcategory_recursive(item["subcategories"], subcat_id)
+                if found:
+                    return found
+        return None
+
     def add_subcategory_to_category(self, category_id: str, subcat_id: str, subcat_name: str, subcat_url: str):
         """Add subcategory to a specific category"""
         data = self.load()
         for cat in data.get("categories", []):
             if cat.get("id") == category_id:
+                # Check if it already exists
+                if self._find_subcategory_recursive(cat.get("subcategories", []), subcat_id):
+                    return True
+                
                 subcategory = {
                     "id": subcat_id,
                     "name": subcat_name,
                     "url": subcat_url,
+                    "description": "",
+                    "image_url": "",
+                    "image_local_path": "",
                     "subcategories": [],
                     "products": []
                 }
@@ -157,123 +180,155 @@ class ProductsManager(JSONManager):
         return False
     
     def add_subcategory_to_subcategory(self, category_id: str, parent_subcat_id: str, subcat_id: str, subcat_name: str, subcat_url: str):
-        """Add nested subcategory (3rd level) to a subcategory"""
+        """Add nested subcategory to any level subcategory"""
         data = self.load()
         for cat in data.get("categories", []):
             if cat.get("id") == category_id:
-                for subcat in cat.get("subcategories", []):
-                    if subcat.get("id") == parent_subcat_id:
-                        nested_subcat = {
-                            "id": subcat_id,
-                            "name": subcat_name,
-                            "url": subcat_url,
-                            "subcategories": [],
-                            "products": []
-                        }
-                        subcat["subcategories"].append(nested_subcat)
-                        data["metadata"]["last_updated"] = datetime.now().isoformat()
-                        self.save(data)
-                        logger.info(f"Added nested subcategory to {parent_subcat_id}: {subcat_name}")
-                        return True
-        logger.warning(f"Subcategory not found: {parent_subcat_id}")
-        return False
-    
-    def add_product_to_subcategory(self, category_id: str, parent_subcat_id: str, product_id: str, product_name: str, product_url: str):
-        """Add product to a subcategory (this is for actual products, not subcategories)"""
-        data = self.load()
-        for cat in data.get("categories", []):
-            if cat.get("id") == category_id:
-                # First try to find it as direct subcategory
-                for subcat in cat.get("subcategories", []):
-                    if subcat.get("id") == parent_subcat_id:
-                        product = {
-                            "id": product_id,
-                            "name": product_name,
-                            "url": product_url,
-                            "title": None,
-                            "description": None,
-                            "short_description": None,
-                            "buy_info": {},
-                            "full_details": None
-                        }
-                        if "products" not in subcat:
-                            subcat["products"] = []
-                        subcat["products"].append(product)
-                        data["metadata"]["total_products"] += 1
-                        data["metadata"]["last_updated"] = datetime.now().isoformat()
-                        self.save(data)
-                        logger.info(f"Added product to {parent_subcat_id}: {product_name}")
+                # Find the parent subcategory anywhere in the hierarchy
+                parent = self._find_subcategory_recursive(cat.get("subcategories", []), parent_subcat_id)
+                
+                if parent:
+                    # Check if subcategory already exists
+                    if self._find_subcategory_recursive(parent.get("subcategories", []), subcat_id):
                         return True
                     
-                    # Also check nested subcategories (3-level deep)
-                    for nested_subcat in subcat.get("subcategories", []):
-                        if nested_subcat.get("id") == parent_subcat_id:
-                            product = {
-                                "id": product_id,
-                                "name": product_name,
-                                "url": product_url,
-                                "title": None,
-                                "description": None,
-                                "short_description": None,
-                                "buy_info": {},
-                                "full_details": None
-                            }
-                            if "products" not in nested_subcat:
-                                nested_subcat["products"] = []
-                            nested_subcat["products"].append(product)
-                            data["metadata"]["total_products"] += 1
-                            data["metadata"]["last_updated"] = datetime.now().isoformat()
-                            self.save(data)
-                            logger.info(f"Added product to nested {parent_subcat_id}: {product_name}")
+                    nested_subcat = {
+                        "id": subcat_id,
+                        "name": subcat_name,
+                        "url": subcat_url,
+                        "description": "",
+                        "image_url": "",
+                        "image_local_path": "",
+                        "subcategories": [],
+                        "products": []
+                    }
+                    if "subcategories" not in parent:
+                        parent["subcategories"] = []
+                    parent["subcategories"].append(nested_subcat)
+                    data["metadata"]["last_updated"] = datetime.now().isoformat()
+                    self.save(data)
+                    logger.info(f"Added nested subcategory to {parent_subcat_id}: {subcat_name}")
+                    return True
+        logger.warning(f"Parent subcategory not found: {parent_subcat_id}")
+        return False
+    
+    def update_subcategory_image(self, category_id: str, subcat_id: str, image_url: str, local_path: str):
+        """Update subcategory image data anywhere in the hierarchy"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                subcat = self._find_subcategory_recursive(cat.get("subcategories", []), subcat_id)
+                if subcat:
+                    subcat["image_url"] = image_url
+                    subcat["image_local_path"] = local_path
+                    self.save(data)
+                    return True
+        return False
+
+    def update_subcategory_description(self, category_id: str, subcat_id: str, description: str):
+        """Update subcategory description anywhere in the hierarchy"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                subcat = self._find_subcategory_recursive(cat.get("subcategories", []), subcat_id)
+                if subcat:
+                    subcat["description"] = description
+                    self.save(data)
+                    return True
+        return False
+
+    def update_category_image(self, category_id: str, image_url: str, local_path: str):
+        """Update category image data"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                cat["image_url"] = image_url
+                cat["image_local_path"] = local_path
+                self.save(data)
+                return True
+        return False
+
+    def update_category_description(self, category_id: str, description: str):
+        """Update category description data"""
+        data = self.load()
+        for cat in data.get("categories", []):
+             if cat.get("id") == category_id:
+                 cat["description"] = description
+                 self.save(data)
+                 return True
+        return False
+
+    def add_product_to_subcategory(self, category_id: str, parent_subcat_id: str, product_id: str, product_name: str, product_url: str):
+        """Add product to any level subcategory"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                # Find the parent subcategory anywhere in the hierarchy
+                subcat = self._find_subcategory_recursive(cat.get("subcategories", []), parent_subcat_id)
+                
+                if subcat:
+                    if "products" not in subcat:
+                        subcat["products"] = []
+                    
+                    # Check if product already exists
+                    for existing_prod in subcat["products"]:
+                        if existing_prod.get("id") == product_id:
                             return True
+                    
+                    product = {
+                        "id": product_id,
+                        "name": product_name,
+                        "url": product_url,
+                        "title": None,
+                        "description": None,
+                        "short_description": None,
+                        "buy_info": {},
+                        "full_details": None
+                    }
+                    subcat["products"].append(product)
+                    data["metadata"]["total_products"] += 1
+                    data["metadata"]["last_updated"] = datetime.now().isoformat()
+                    self.save(data)
+                    logger.info(f"Added product to {parent_subcat_id}: {product_name}")
+                    return True
         logger.warning(f"Subcategory not found: {parent_subcat_id}")
         return False
     
     def update_product_details(self, category_id: str, parent_subcat_id: str, product_id: str, details: Dict[str, Any]):
-        """Update product details after extraction"""
+        """Update product details anywhere in the hierarchy"""
         data = self.load()
         for cat in data.get("categories", []):
             if cat.get("id") == category_id:
-                # Check direct subcategories
-                for subcat in cat.get("subcategories", []):
-                    if subcat.get("id") == parent_subcat_id:
-                        for product in subcat.get("products", []):
-                            if product.get("id") == product_id:
-                                product.update(details)
-                                data["metadata"]["last_updated"] = datetime.now().isoformat()
-                                self.save(data)
-                                logger.info(f"Updated product details: {product_id}")
-                                return True
-                    
-                    # Also check nested subcategories
-                    for nested_subcat in subcat.get("subcategories", []):
-                        if nested_subcat.get("id") == parent_subcat_id:
-                            for product in nested_subcat.get("products", []):
-                                if product.get("id") == product_id:
-                                    product.update(details)
-                                    data["metadata"]["last_updated"] = datetime.now().isoformat()
-                                    self.save(data)
-                                    logger.info(f"Updated nested product details: {product_id}")
-                                    return True
-        logger.warning(f"Product not found: {product_id}")
+                subcat = self._find_subcategory_recursive(cat.get("subcategories", []), parent_subcat_id)
+                if subcat:
+                    for product in subcat.get("products", []):
+                        if product.get("id") == product_id:
+                            product.update(details)
+                            data["metadata"]["last_updated"] = datetime.now().isoformat()
+                            self.save(data)
+                            logger.info(f"Updated product details: {product_id}")
+                            return True
+        logger.warning(f"Product or subcategory not found: {product_id}")
         return False
     
     def add_product(self, category_id: str, subcategory_id: str, product_data: Dict[str, Any]):
-        """Add product to specific category and subcategory"""
+        """Add product to specific category and subcategory anywhere in the hierarchy"""
         data = self.load()
         for cat in data.get("categories", []):
             if cat.get("id") == category_id:
-                for subcat in cat.get("subcategories", []):
-                    if subcat.get("id") == subcategory_id:
-                        if "products" not in subcat:
-                            subcat["products"] = []
-                        subcat["products"].append(product_data)
-                        data["metadata"]["total_products"] += 1
-                        data["metadata"]["last_updated"] = datetime.now().isoformat()
-                        self.save(data)
-                        logger.info(f"Added product: {product_data.get('name')}")
-                        return
-        logger.warning(f"Category or subcategory not found")
+                # Find the subcategory anywhere in the hierarchy
+                subcat = self._find_subcategory_recursive(cat.get("subcategories", []), subcategory_id)
+                
+                if subcat:
+                    if "products" not in subcat:
+                        subcat["products"] = []
+                    subcat["products"].append(product_data)
+                    data["metadata"]["total_products"] += 1
+                    data["metadata"]["last_updated"] = datetime.now().isoformat()
+                    self.save(data)
+                    logger.info(f"Added product: {product_data.get('name')}")
+                    return
+        logger.warning(f"Category or subcategory not found: {subcategory_id}")
 
 
 class LinksProgressManager(JSONManager):
@@ -403,6 +458,28 @@ class LinksProgressManager(JSONManager):
                        if not subcat.get("scraped", False)]
         return []
     
+    def is_subcategory_scraped(self, category_id: str, subcat_id: str) -> bool:
+        """Check if a subcategory is already marked as scraped"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                for subcat in cat.get("subcategories", []):
+                    if subcat.get("id") == subcat_id:
+                        return subcat.get("scraped", False)
+        return False
+
+    def is_product_scraped(self, category_id: str, subcat_id: str, product_id: str) -> bool:
+        """Check if a product is already marked as scraped"""
+        data = self.load()
+        for cat in data.get("categories", []):
+            if cat.get("id") == category_id:
+                for subcat in cat.get("subcategories", []):
+                    if subcat.get("id") == subcat_id:
+                        for product in subcat.get("products", []):
+                            if product.get("id") == product_id:
+                                return product.get("scraped", False)
+        return False
+
     def add_failed_link(self, url: str, reason: str):
         """Track failed links"""
         data = self.load()

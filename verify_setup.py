@@ -86,22 +86,22 @@ def check_dependencies():
     print("-" * 80)
     
     required_packages = {
-        'selenium': '4.15.2',
-        'undetected_chromedriver': '3.5.4',
-        'beautifulsoup4': '4.12.2',
-        'requests': '2.31.0',
-        'Pillow': '10.1.0',
+        'selenium': 'selenium',
+        'undetected-chromedriver': 'undetected_chromedriver',
+        'beautifulsoup4': 'bs4',
+        'requests': 'requests',
+        'Pillow': 'PIL',
     }
     
     all_ok = True
     
-    for package, version in required_packages.items():
+    for package, module_name in required_packages.items():
         try:
-            module = __import__(package.replace('-', '_'))
+            module = __import__(module_name)
             print(f"  ✓ {package} (installed)")
         except ImportError:
             print(f"  ✗ {package} - NOT INSTALLED!")
-            print(f"     Run: pip install {package}=={version}")
+            print(f"     Run: pip install {package}")
             all_ok = False
     
     return all_ok

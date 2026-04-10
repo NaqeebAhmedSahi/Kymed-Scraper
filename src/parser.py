@@ -2,8 +2,9 @@
 Parser - BeautifulSoup parsers for extracting data from HTML
 """
 import logging
+import requests
 import re
-from typing import Dict, List, Any, Optional
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import uuid
@@ -126,10 +127,22 @@ class SubcategoryParser:
                     
                     full_url = urljoin(base_url, url)
                     
+                    # Extract image and convert to high quality
+                    img_elem = item.find('img')
+                    image_url = img_elem.get('src', '').strip() if img_elem else ''
+                    if image_url:
+                        # For category images (/img/c/), large_default is usually the best
+                        # For product images (/img/p/), thickbox_default is better
+                        if '/img/p/' in image_url:
+                            image_url = image_url.replace('large_default', 'thickbox_default')
+                        # For category images, we keep large_default or search for category_default
+                        # but based on 404 error, thickbox_default definitely doesn't work for /img/c/
+                    
                     subcat_dict = {
                         'id': item_id,
                         'name': name,
                         'url': full_url,
+                        'image_url': urljoin(base_url, image_url),
                         'type': 'subcategory'
                     }
                     
@@ -152,14 +165,30 @@ class SubcategoryParser:
     
     @staticmethod
     def extract_category_description(html: str) -> str:
-        """Extract category description from page"""
+        """
+        Extract category description from the top of the page
+        
+        Args:
+            html: HTML content of the page
+            
+        Returns:
+            Description text or empty string
+        """
         try:
             soup = BeautifulSoup(html, 'html.parser')
             
-            # Find the description paragraph (usually after h1)
-            description_elem = soup.find('p')
-            if description_elem:
-                return description_elem.get_text(strip=True)
+            # Use the specific selector provided by the user
+            desc_div = soup.find('div', class_='category-description')
+            if not desc_div:
+                desc_div = soup.find('div', class_='category-description-top')
+            
+            if desc_div:
+                # Extract all text, maintaining some spacing between paragraphs
+                paragraphs = desc_div.find_all(['p', 'span'])
+                if paragraphs:
+                    return "\n\n".join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
+                
+                return desc_div.get_text(strip=True)
             
             return ""
         except Exception as e:
@@ -206,9 +235,13 @@ class ProductParser:
                     url = link_elem.get('href', '').strip()
                     name = link_elem.get_text(strip=True)
                     
-                    # Extract image
+                    # Extract image and convert to high quality
                     img_elem = item.find('img')
                     image_url = img_elem.get('src', '').strip() if img_elem else ''
+                    if image_url:
+                        # Only upgrade to thickbox_default if it's a product image
+                        if '/img/p/' in image_url:
+                            image_url = image_url.replace('large_default', 'thickbox_default')
                     
                     if url and name:
                         # Extract product ID from URL
@@ -236,6 +269,21 @@ class ProductParser:
             logger.error(f"Error extracting products: {e}")
             return []
     
+    @staticmethod
+    def get_perfect_hd_url(base_url: str, img_id: str) -> str:
+        """
+        Construct the 'Perfect HD' URL (un-padded original image) from a PrestaShop image ID.
+        Pattern: base_url/img/p/[digit1]/[digit2]/.../ID.jpg
+        """
+        if not img_id or not img_id.isdigit():
+            return ""
+        
+        # Standard PrestaShop image path: each digit represents a subfolder
+        path_parts = list(img_id)
+        path = "/".join(path_parts)
+        
+        return f"https://agnthos.se/img/p/{path}/{img_id}.jpg"
+
     @staticmethod
     def extract_product_details(html: str, url: str = "") -> Dict[str, Any]:
         """
@@ -281,26 +329,92 @@ class ProductParser:
                 if spec.get('article_number'):
                     article_numbers.append(spec['article_number'])
             
+            # Extract multiple images
+            all_images = []
+            
+            # 1. Look for all images with data-image-large-src (this is the HD version)
+            # We return BOTH the Perfect HD URL and the original URL for fallback
+            import re
+            hd_img_elements = soup.find_all('img', attrs={"data-image-large-src": True})
+            for img in hd_img_elements:
+                hd_url = img.get('data-image-large-src')
+                if hd_url:
+                    full_original_url = urljoin(url, hd_url)
+                    # Always add the original URL first
+                    if full_original_url not in all_images:
+                        all_images.append(full_original_url)
+                    # Also add the Perfect HD URL
+                    match = re.search(r'/(\d+)-', hd_url)
+                    if match:
+                        img_id = match.group(1)
+                        perfect_url = ProductParser.get_perfect_hd_url("https://agnthos.se", img_id)
+                        if perfect_url and perfect_url not in all_images:
+                            all_images.append(perfect_url)
+            
+            # 2. Fallback to main image swiper if not found by attribute
+            if not all_images:
+                image_container = soup.find('div', id='product-images-large')
+                if image_container:
+                    img_elems = image_container.find_all('img')
+                    for img in img_elems:
+                        hd_url = img.get('content') or img.get('src')
+                        if hd_url:
+                            full_original_url = urljoin(url, hd_url)
+                            if full_original_url not in all_images:
+                                all_images.append(full_original_url)
+                            # Also add Perfect HD version
+                            match = re.search(r'/(\d+)-', hd_url)
+                            if match:
+                                img_id = match.group(1)
+                                perfect_url = ProductParser.get_perfect_hd_url("https://agnthos.se", img_id)
+                                if perfect_url and perfect_url not in all_images:
+                                    all_images.append(perfect_url)
+            
+            # 3. Final fallback to any product-like image
+            if not all_images:
+                cover_img = soup.find('img', class_='img-fluid')
+                if cover_img:
+                    hd_url = cover_img.get('src')
+                    if hd_url:
+                        full_original_url = urljoin(url, hd_url)
+                        if full_original_url not in all_images:
+                            all_images.append(full_original_url)
+                        match = re.search(r'/(\d+)-', hd_url)
+                        if match:
+                            img_id = match.group(1)
+                            perfect_url = ProductParser.get_perfect_hd_url("https://agnthos.se", img_id)
+                            if perfect_url and perfect_url not in all_images:
+                                all_images.append(perfect_url)
+
             return {
                 'name': name,
                 'title': name,
                 'short_description': short_description,
+                'description': short_description,
+                'full_details': long_description,
                 'long_description': long_description,
                 'specifications': specifications,
-                'variants': specifications,  # Variants are the specifications/rows from buy table
+                'buy_info': specifications,
+                'variants': specifications,
                 'article_numbers': article_numbers,
-                'buy_table_data': specifications,
-                'url': url
+                'url': url,
+                'image_urls': all_images
             }
-            
         except Exception as e:
             logger.error(f"Error extracting product details: {e}")
             return {
                 'name': "",
                 'title': "",
                 'short_description': "",
+                'description': "",
                 'long_description': "",
-                'specifications': []
+                'full_details': "",
+                'specifications': [],
+                'buy_info': [],
+                'variants': [],
+                'article_numbers': [],
+                'url': url,
+                'image_urls': []
             }
     
     @staticmethod
